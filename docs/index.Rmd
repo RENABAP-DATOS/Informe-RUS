@@ -1,0 +1,1324 @@
+---
+title: "Informe RUS"
+author: "RENABAP"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: "cosmo"
+    toc: TRUE
+    toc_float: TRUE #arma menu flotante
+    code_download: TRUE # para descargar el rmd
+    number-sections: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(data.table)
+library(DT)
+library(kableExtra)
+library(tidytext)
+library(highcharter)
+library(ggrepel)
+library(geoAr)
+library(sf)
+```
+
+```{r}
+#0 seteo y levanto data ####
+options(scipen = 999)
+
+## junto data y escribo
+fecha<-str_replace_all(Sys.Date()-2, "-", "")
+
+base_full<-fread(paste0("../data/csv_anteriores/data_full_", fecha, ".csv"), encoding = "UTF-8", sep = ";")
+max(base_full$solicitud_id)
+```
+
+```{r}
+## colores
+colores_dia_horario<-c("Madrugada" = "#619b8a", 
+                       "Mañana" = "#a1c181", 
+                       "Mediodía" = "#fcca46", 
+                       "Tarde" = "#fe7f2d",
+                       "Noche" = "#233d4d")
+
+colores_gen<-c("Mujer" = "#fb76c1",
+               "Varón" = "#0a85ed",
+               "Mujer trans, varón trans, travesti, no binario" = "#797ed9")
+
+colores_etario<-c("18-29" = "#56fffc", 
+                  "30-39" = "#49d9e4", 
+                  "40-49" = "#3db2cb", 
+                  "50-59" = "#308cb3", 
+                  "60-69" = "#24659a", 
+                  "70+" = "#173f82")
+
+colores_mudanza<-c("Sí" = "#03a9f4", 
+                   "No" = "#b6eb7b")
+
+hcLabelRender <- "
+function() {
+    var s = this.name;
+    var r = '';
+    var lastAppended = 0;
+    var lastSpace = -1;
+    for (var i = 0; i < s.length; i++) {
+        if (s.charAt(i) == ' ') lastSpace = i;
+        if (i - lastAppended > 20) {
+            if (lastSpace == -1) lastSpace = i;
+            r += s.substring(lastAppended, lastSpace);
+            lastAppended = lastSpace;
+            lastSpace = -1;
+            r += '<br>';
+        }
+    }
+    r += s.substring(lastAppended, s.length);
+    return r;
+}
+"
+
+
+color_gradient <- function(dt, column_name, gradient_colors = c("#6666FF", "#DDDDDD", "#FF6666")) {
+    col_func <- colorRampPalette(gradient_colors)
+    dt %>% 
+        formatStyle(column_name, 
+                    backgroundColor = styleEqual(
+                        sort(unique(dt$x$data[[column_name]]), decreasing = TRUE),
+                        col_func(length(unique(dt$x$data[[column_name]])))
+                    )
+        ) 
+}
+```
+
+# GENERAL
+
+## 1- Mapa
+
+```{r}
+df1_provincia_lote<-base_full%>%
+  filter(!solicitud_provinca %in% c("", "TEST", "NULL"))%>%
+  group_by(solicitud_provinca)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje=round(cantidad/sum(cantidad)*100, digits = 2), 
+         provincia = solicitud_provinca)
+
+argentina<-get_geo(geo = "ARGENTINA", level = "provincia")
+
+data_provs <- data.frame(show_arg_codes())%>%
+  rename(provincia = name_iso)
+
+argentina<-argentina%>%
+  left_join(data_provs)%>%
+  left_join(df1_provincia_lote)
+
+df1_provincia_lote<-df1_provincia_lote%>%
+  left_join(data_provs)%>%
+  left_join(argentina)
+
+
+plot_mapa <- ggplot(argentina, 
+                    aes(fill = porcentaje))+
+  geom_sf(aes(alpha=0.6))+
+  geom_text_repel(data = df1_provincia_lote, 
+                   aes(label = paste(str_to_sentence(id), "\n", porcentaje, "%"),
+                       geometry = geometry, 
+                       segment.linetype = 2),
+                   size = 2,
+                   box.padding = 1, #largo de la flecha
+                   max.overlaps = Inf, 
+                   stat = "sf_coordinates")+
+  coord_sf(xlim = c(-90, -40), ylim = c(-60, -15))+
+  # geom_sf_label(data = argentina,aes(label=scales::percent(porcentaje_avance)),color="black", fill="white", size =3)+
+  theme_void()+
+  theme(legend.position = "none")+
+  # theme(axis.text.x = element_blank(),
+  #       axis.text.y = element_blank(),
+  #       legend.position = "bottom",
+  #       legend.title = element_text(size = 25),
+  #       legend.text = element_text(size = 15),
+        # plot.background = element_rect(colour = "white", fill = "white"),
+        # )+
+  scale_fill_gradientn(colours =  alpha(c("#bf677a", "#eab37d", "#ffdd83", "#DCDFAF", "#7ae5b7"),alpha = 0.7),
+                                        labels = scales::percent)+
+  labs(fill = "Porcentaje de avance", 
+       x="", 
+       y="")
+plot_mapa
+
+```
+
+```{r}
+library(leaflet)
+
+pal <- colorQuantile("YlGn", NULL, n = 6)
+
+mapa<-leaflet(argentina, height = 600)%>%
+  # addTiles("https://wms.ign.gob.ar/geoserver/gwc/service/tms/1.0.0/capabaseargenmap@EPSG%3A3857@png/{z}/{x}/{-y}.png")
+  addArgTiles()%>%
+  # addProviderTiles("https://wms.ign.gob.ar/geoserver/gwc/service/tms/1.0.0/capabaseargenmap@EPSG%3A3857@png/{z}/{x}/{-y}.png")%>%
+  addPolygons(fillColor = ~pal(argentina$cantidad),
+              fillOpacity = 0.8, 
+              color = "white", 
+              weight = 1,
+              label = ~porcentaje)
+mapa
+```
+
+## 2- Fecha y horario
+
+La mayor cantidad de solicitudes se registran a la mañana o a la noche\
+La mayor cantidad de solicitudes se registran a la mañana o a la noche]\
+mayor cantidad de solicitudes se registran a la mañana o a la noche\
+La mayor cantidad de solicitudes se registran a la mañana o a la noche
+
+```{r}
+df2_fecha_hora <- base_full%>%
+  mutate(fecha_creacion = ymd_hms(fecha_creacion),
+         fecha = date(fecha_creacion),
+         hora = hour(fecha_creacion))%>%
+  # mutate(horario = case_when(hour(fecha_creacion)<hours(8) ~ "madrugada"))%>%
+  mutate(horario = cut(hora, breaks = c(0, 8, 12, 16, 20, 24), 
+                       labels = c("Madrugada", "Mañana", "Mediodía", "Tarde", "Noche"), 
+                       include.lowest = TRUE, ordered_result = T))%>%
+  group_by(fecha, horario)%>%
+  summarise(cantidad = n())%>%
+  mutate(color = case_when(
+              horario == "Madrugada" ~ "#619b8a", 
+              horario == "Mañana" ~ "#a1c181", 
+              horario == "Mediodía" ~ "#fcca46", 
+              horario == "Tarde" ~ "#fe7f2d",
+              horario == "Noche" ~ "#233d4d"
+            ))
+
+plot_general_1<-hchart(df2_fecha_hora, 
+                       type= "column",
+                       stacking = list(enabled = TRUE),
+                       hcaes(fecha, cantidad, group = horario, color = color))%>%
+  hc_colors(colors = c("#619b8a","#a1c181", "#fcca46", "#fe7f2d", "#233d4d"))%>%
+  hc_plotOptions(column = list(pointWidth = 15))%>%
+  hc_yAxis(title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_general_1
+```
+
+## 3.1 - Distribución por provincia y tipo de lote
+
+```{r}
+df3_provincia_lote<-base_full%>%
+  filter(!solicitud_provinca %in% c("", "TEST", "NULL"))%>%
+  group_by(solicitud_provinca, solicitud_linea)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje=round(cantidad/sum(cantidad)*100, digits = 2), 
+         solicitud_provinca = ifelse(solicitud_provinca=="Ciudad Autónoma de Buenos Aires", "CABA", solicitud_provinca),
+         color = case_when(
+           solicitud_linea == "A1" ~ "#f66d00",
+           solicitud_linea == "R1" ~ "#00b6cb"
+         ))
+
+plot_3_1<-hchart(df3_provincia_lote,
+                 type = "column",
+                 width = 14,
+                 hcaes(solicitud_provinca, cantidad, group = solicitud_linea, color = color),
+                 stacking = "percent")%>%
+  hc_colors(color = unique(df3_provincia_lote$color))%>%
+  hc_chart(inverted = TRUE)%>%
+  hc_yAxis(labels = list(format = "{value}%"))%>%
+  hc_plotOptions(column = list(pointWidth = 15,
+                 dataLabels = list(enabled = TRUE,
+                      format = "{point.percentage:.1f}%")))%>%
+  hc_yAxis(title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_3_1
+
+```
+
+## 3.2 - Distribución por provincia y tipo de lote
+
+La mayor cantidad de solicitudes se registran a la mañana o a la noche\
+La mayor cantidad de solicitudes se registran a la mañana o a la noche]\
+mayor cantidad de solicitudes se registran a la mañana o a la noche\
+La mayor cantidad de solicitudes se registran a la mañana o a la noche
+
+```{r}
+plot_3_2<-hchart(df1_provincia_lote%>%
+                   arrange(desc(cantidad)),
+                 type = "column",
+                 width = 14,
+                 hcaes(solicitud_provinca, porcentaje))%>%
+  # hc_colors(color = unique(df3_provincia_lote$color))%>%
+  hc_chart(inverted = TRUE)%>%
+  hc_yAxis(labels = list(format = "{value}%"))%>%
+  hc_plotOptions(column = list(pointWidth = 15,
+                                color ="#5e35b1",
+                               dataLabels = list(enabled = TRUE,
+                                                 format = "{point.porcentaje:.1f}%")))%>%
+  hc_yAxis(title = FALSE, type ='logarithmic')%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_3_2
+```
+
+## 3.3 - Departamentos con mayores inscripciones
+
+La mayor cantidad de solicitudes se registran a la mañana o a la noche\
+La mayor cantidad de solicitudes se registran a la mañana o a la noche]\
+mayor cantidad de solicitudes se registran a la mañana o a la noche\
+La mayor cantidad de solicitudes se registran a la mañana o a la noche
+
+```{r}
+df3_departamentos<-base_full%>%
+  group_by(solicitud_partido, solicitud_provinca, solicitud_linea)%>%
+  summarise(cantidad = n())%>%
+  pivot_wider(names_from = solicitud_linea, values_from = cantidad, values_fill = 0)%>%
+  ungroup()%>%
+  rowwise()%>%
+  mutate(`Total solicitudes` = sum(A1, R1))%>%
+  ungroup()%>%
+  mutate(`%U` = round(A1/sum(A1)*100, digit = 2),
+         `%R` = round(R1/sum(R1)*100, digits = 2),
+         `%T` = round(`Total solicitudes`/sum(`Total solicitudes`)*100, digits = 2))%>%
+  arrange(desc(`Total solicitudes`))%>%
+  select(`Departamento/partido` = solicitud_partido,
+         Provincia = solicitud_provinca,
+         `Total solicitudes`, `%T`,
+         `Solicitudes Urbano` = A1, `%U`,
+         `Solicitudes Rural` = R1, `%R`)
+
+kbl(x = df3_departamentos%>%slice(1:13))%>%
+  kable_paper(full_width = F)%>%
+  column_spec(column = 3, 
+              color = "white", 
+              background = spec_color(df3_departamentos$`Total solicitudes`, direction = -1))
+
+```
+
+```{r}
+datatable(df3_departamentos%>%
+            slice(1:15),
+          extensions = 'Buttons',
+          options = list(pegeLenght = 15,
+                         dom = 'Bfrtip',
+                         buttons = c('csv', 'excel')))%>%
+  color_gradient("Total solicitudes")
+
+```
+
+## 3.4 - Totales para descargar
+
+```{r}
+
+df3_provincias<-base_full%>%
+  group_by(solicitud_provinca, solicitud_linea)%>%
+  summarise(cantidad = n())%>%
+  pivot_wider(names_from = solicitud_linea, values_from = cantidad, values_fill = 0)%>%
+  ungroup()%>%
+  rowwise()%>%
+  mutate(`Total solicitudes` = sum(A1, R1))%>%
+  ungroup()%>%
+  mutate(`%U` = round(A1/sum(A1)*100, digit = 2),
+         `%R` = round(R1/sum(R1)*100, digits = 2),
+         `%T` = round(`Total solicitudes`/sum(`Total solicitudes`)*100, digits = 2))%>%
+  arrange(desc(`Total solicitudes`))%>%
+  select(
+         Provincia = solicitud_provinca,
+         `Total solicitudes`, `%T`,
+         `Solicitudes Urbano` = A1, `%U`,
+         `Solicitudes Rural` = R1, `%R`)
+
+datatable(df3_provincias,
+          extensions = 'Buttons',
+          options = list(pegeLenght = 15,
+                         dom = 'Bfrtip',
+                         buttons = c('csv', 'excel')))
+
+```
+
+## 4 - Género
+
+```{r}
+df4_genero<-base_full%>%
+  filter(titular_genero %in% c("Mujer", "Varón", "Mujer trans, varón trans, travesti, no binario"))%>%
+  group_by(titular_genero)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje = cantidad/sum(cantidad), 
+         color = case_when(
+           titular_genero == "Mujer" ~ "#fb76c1",
+           titular_genero == "Varón" ~ "#0a85ed",
+           titular_genero == "Mujer trans, varón trans, travesti, no binario" ~ "#797ed9"
+         ))%>%
+  arrange(desc(cantidad))
+
+plot_4_genero <- hchart(df4_genero, 
+                        type = "pie", 
+                        innerSize = 250, colorByPoint = TRUE,
+                        hcaes(titular_genero, cantidad, color = color),
+                         dataLabels = list(
+                          format = "{point.percentage:.1f}%",
+                          # enabled = FALSE,
+                          distance = '-30%',
+                          showInLegend=TRUE
+                       ))%>%
+  hc_plotOptions(pie = list(showInLegend = TRUE))%>%
+  hc_legend(enabled = TRUE,
+            align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_4_genero
+
+```
+
+## 4.3 - Rango etario por tipo de solicitud
+
+```{r}
+df4_rango_etario<-base_full%>%
+  mutate(titular_fecha_nacimiento_renaper=ymd(titular_fecha_nacimiento_renaper), 
+         edad = year(Sys.Date())-year(titular_fecha_nacimiento_renaper),
+         rango_etario = cut(edad, 
+                            breaks = c(0,29,39,49,59,69,500),
+                            labels = c("18-29", "30-39", "40-49", "50-59", "60-69", "70+"), 
+                            include.lowest = T))%>%
+  mutate(solicitud_linea = ifelse(solicitud_linea == "A1", "Urbano", "Rural"))%>%
+  # select(solicitud_id, titular_fecha_nacimiento_renaper, edad, rango_etario)%>%
+  group_by(solicitud_linea, rango_etario)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  group_by(solicitud_linea)%>%
+  filter(!is.na(rango_etario))%>%
+  mutate(porcentaje = cantidad/sum(cantidad),
+         colores = case_when(
+           rango_etario == "18-29" ~ "#56fffc",
+           rango_etario == "30-39" ~ "#49d9e4",
+           rango_etario == "40-49" ~ "#3db2cb",
+           rango_etario == "50-59" ~ "#308cb3", 
+           rango_etario == "60-69" ~ "#24659a",
+           rango_etario == "70+"   ~ "#173f82"
+         ))
+
+plot_4_etario<-hchart(df4_rango_etario,
+                      type = "column",
+                      stacking = "percent",
+                      hcaes(solicitud_linea, cantidad, group = rango_etario, color = colores))%>%
+  hc_yAxis(labels = list(format = "{value}%"))%>%
+  hc_colors(unique(df4_rango_etario$colores))%>%
+  hc_plotOptions(column = list(
+    # pointWidth = 65,
+    dataLabels = list(enabled = TRUE,
+                      format = "{point.percentage:.1f}%",
+                      color = c("#00b6cb"))))%>%
+  hc_yAxis(title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_4_etario
+```
+
+# URBANO
+
+## 1.1- Género
+
+```{r}
+df_urbano_1_genero<-base_full%>%
+  filter(solicitud_linea == "A1")%>%
+  filter(titular_genero %in% c( "Mujer", "Varón", "Mujer trans, varón trans, travesti, no binario"))%>%
+  group_by(titular_genero)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad), digits = 2),
+         color = case_when(
+           titular_genero == "Mujer" ~ "#fb76c1",
+           titular_genero == "Varón" ~ "#0a85ed",
+           titular_genero == "Mujer trans, varón trans, travesti, no binario" ~ "#797ed9"))%>%
+  arrange(desc(cantidad))
+
+plot_u_1_genero<-hchart(df_urbano_1_genero, 
+                        type = "pie", 
+                        innerSize = 250, colorByPoint = TRUE,
+                        hcaes(titular_genero, cantidad, color = color),
+                        dataLabels = list(
+                          format = "{point.percentage:.1f}%",
+                          # enabled = FALSE,
+                          distance = '-30%',
+                        showInLegend=TRUE
+                       ))%>%
+  hc_plotOptions(pie = list(showInLegend = TRUE))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  # hc_plotOptions(pie = list(dataLabels=list(enabled = TRUE,filter = "{property: 'cantidad', operator: '<',value: 5000}")))%>%
+  hc_exporting(enabled = TRUE)
+plot_u_1_genero
+```
+
+## 1.2- Cantidad de miembros por familia
+
+```{r}
+df_urbano_1_miembros <- base_full%>%
+  filter(solicitud_linea == "A1")%>%
+  group_by(solicitud_grupo_familiar)%>%
+  summarise(cantidad=n())%>%
+  filter(!is.na(solicitud_grupo_familiar))%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits = 2))
+
+plot_u_1_miembros<-hchart(df_urbano_1_miembros,
+                          type = "column", 
+                          hcaes(solicitud_grupo_familiar, porcentaje, color = c("#00b6cb")))%>%
+  hc_plotOptions(column = list(pointWidth = 65,
+                          dataLabels = list(enabled = TRUE, 
+                                            format = "{point.porcentaje:.1f}%", 
+                                            color = c("#00b6cb"))))%>%
+  hc_yAxis(labels = list(format = "{value}%"),
+           title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_u_1_miembros
+```
+
+## 1.3- Actividades productivas
+
+```{r}
+df_urbano_1_actividades<-base_full%>%
+  filter(solicitud_linea == "A1" &
+           !solicitud_vivienda_servicios %in% c("NULL", "No, no se produce ni comercializa nada", "Sí, hay un más alto"))%>%
+  mutate(solicitud_vivienda_servicios = case_when(
+    solicitud_vivienda_servicios == "Sí, hay un taller" ~ "Taller",
+    solicitud_vivienda_servicios == "Sí, hay un emprendimiento" ~ "Emprendimiento",
+    solicitud_vivienda_servicios == "Sí, otra opción" ~ "Otras",
+    solicitud_vivienda_servicios == "Sí, hay un comercio" ~ "Comercio",
+    solicitud_vivienda_servicios == "Sí, hay cría de animales" ~ "Cría de animales",
+    solicitud_vivienda_servicios == "Sí, hay una huerta" ~ "Huerta",
+    solicitud_vivienda_servicios == "Sí, hay un comedor/merendero" ~ "Comedor/merendero"
+  ))%>%
+  group_by(solicitud_vivienda_servicios)%>%
+  summarise(cantidad=n())%>%
+  ungroup()%>%
+  mutate(porcentaje = cantidad/sum(cantidad),
+         color = case_when(
+           solicitud_vivienda_servicios == "Comercio" ~ "#ffa800",
+           solicitud_vivienda_servicios == "Emprendimiento" ~ "#00b6cb",
+           solicitud_vivienda_servicios == "Taller" ~ "#7cb342",
+           solicitud_vivienda_servicios == "Otras" ~ "#5e35b1",
+           solicitud_vivienda_servicios == "Cría de animales" ~ "#f66d00",
+           solicitud_vivienda_servicios == "Huerta" ~ "#f10096",
+           solicitud_vivienda_servicios == "Comedor/merendero" ~ "#0072f0"
+         ))%>%
+  filter(!is.na(solicitud_vivienda_servicios))%>%
+  arrange(desc(cantidad))
+
+colores_actividad<-c("Comercio" = "#ffa800",
+                     "Emprendimiento" ~ "#00b6cb",
+                     "Taller" ~ "#7cb342",
+                     "Otras" ~ "#5e35b1",
+                     "Cría de animales" ~ "#f66d00",
+                     "Huerta" ~ "#f10096",
+                     "Comedor/merendero" ~ "#0072f0")
+
+
+plot_u_1_actividades<-hchart(df_urbano_1_actividades, 
+                        type = "pie", 
+                        innerSize = 250, colorByPoint = TRUE,
+                        hcaes(solicitud_vivienda_servicios, cantidad, color = color),
+                         dataLabels = list(
+                          format = "{point.percentage:.1f}%",
+                          # enabled = FALSE,
+                          distance = '-30%',
+                        showInLegend=TRUE
+                       ))%>%
+  hc_plotOptions(pie = list(showInLegend = TRUE,
+                            dataLabels = list(
+                              enabled = TRUE,
+                              filter = list(
+                                property= 'percentage',
+                                operator='>',
+                                value= 3))))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_u_1_actividades 
+```
+
+## 2.1- Situación grupo familiar solicitante
+
+```{r}
+df_urbano_1_ocupacion <- base_full%>%
+  filter(solicitud_linea == "A1")%>%
+  group_by(titular_ocupacion)%>%
+  summarise(cantidad=n())%>%
+  mutate(porcentaje = cantidad/sum(cantidad),
+         color= case_when(
+           titular_ocupacion ==  "Empleado/a en relación de dependencia registrado (formal)" ~ "#5e35b1",
+           titular_ocupacion ==  "Empleado/a en relación de dependencia no registrado (informal)" ~ "#f10096",
+           titular_ocupacion ==  "Ama de casa y ocupada de las tareas del hogar sin remuneración" ~ "#ff7043",
+           titular_ocupacion ==  "Trabajador/a independiente y de la economía popular (monotributista social - trabajador/a de programa social - cooperativista - changas)" ~ "#ec407a",
+           titular_ocupacion ==   "Desempleado/a" ~ "#7cb342",
+           titular_ocupacion ==   "Otro" ~ "#f48fb1",
+           titular_ocupacion ==   "Estudiante" ~ "#00b6cb",
+           titular_ocupacion ==   "Trabajador/a independiente registrado (monotributista o autónomo)" ~ "#03a9f4",
+           titular_ocupacion ==   "Pensionado/a" ~ "#ffa800",
+           titular_ocupacion ==   "Jubilado/a" ~ "#f66d00",
+           titular_ocupacion ==   "Patrón/a y/o empleador/a" ~ "#0072f0"
+         ))%>%
+  arrange(desc(cantidad))
+  
+plot_u_2_ocupacion<-hchart(df_urbano_1_ocupacion, 
+                        type = "pie", 
+                        innerSize = 250, colorByPoint = TRUE,
+                        hcaes(titular_ocupacion, cantidad, color = color),
+                         dataLabels = list(
+                          format = "{point.percentage:.1f}%",
+                          # enabled = FALSE,
+                          distance = '-30%',
+                        showInLegend=TRUE
+                       ))%>%
+  hc_plotOptions(pie = list(showInLegend = TRUE,
+                            dataLabels = list(
+                              enabled = TRUE,
+                              filter = list(
+                                property= 'percentage',
+                                operator='>',
+                                value= 3))))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_u_2_ocupacion 
+
+```
+
+## 2.2- Ingreso declarado
+
+```{r}
+df_urbano_2_ingresos<-base_full%>%
+  filter(solicitud_linea == "A1")%>%
+  mutate(titular_ingresos2 = cut(titular_ingresos, 
+                                breaks = c(0, 99999, 200000, 300000, 400000, 500000, 600000, 700000, 10000000000),
+                                labels = c('1- menos de 100 mil', 
+                                           '2- entre 100 y 200 mil', 
+                                           '3- entre 200 y 300 mil', 
+                                           '4- entre 300 y 400 mil',
+                                           '5- entre 400 y 500 mil',
+                                           '6- entre 500 y 600 mil',
+                                           '7- entre 600 y 700 mil',
+                                           '8- más de 700 mil'), 
+                                include.lowest = T))%>%
+  select(titular_ingresos, titular_ingresos2)%>%
+  group_by(titular_ingresos2)%>%
+  summarise(cantidad=n())%>%
+  filter(!is.na(titular_ingresos2))%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits = 2))
+
+plot_u_2_ingresos<-hchart(df_urbano_2_ingresos,
+                          type = "column", 
+                          hcaes(titular_ingresos2, porcentaje, color = c("#0072f0")))%>%
+  hc_plotOptions(column = list(pointWidth = 65,
+                          dataLabels = list(enabled = TRUE, 
+                                            format = "{point.porcentaje:.1f}%", 
+                                            color = c("#0072f0"))))%>%
+  hc_yAxis(labels = list(format = "{value}%"),
+           title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_u_2_ingresos
+```
+
+## 2.3- Dispuesto a pagar
+
+```{r}
+df_urbano_2_dispuesto<-base_full%>%
+  filter(solicitud_linea == "A1")%>%
+  filter(!solicitud_plan %in%c("Córdoba", "", "Buenos Aires", "NULL"))%>%
+  mutate(solicitud_plan = case_when(
+   solicitud_plan %in% c("Entre $1 y $5.000", "Entre $5.000 y $10.000") ~ '1-Menos de $10 mil',
+   solicitud_plan %in% c("Entre $10.000 y $15.000", "Entre $15.000 y $20.000") ~ '2-Entre $10 y $20 mil', 
+   solicitud_plan %in% c("Entre $20.000 y $25.000","Entre $25.000 y $30.000" ) ~ '3-Entre $20 y $30 mil', 
+   solicitud_plan %in% c("Entre $30.000 y $35.000", "Entre $35.000 y $40.000") ~ '4-Entre $30 y $40 mil', 
+   solicitud_plan %in% c("Entre $40.000 y $45.000", "Entre $45.000 y $50.000") ~ '5-Entre $40 y $50 mil', 
+   solicitud_plan %in% c("Entre $50.000 y $60.000", "Entre $60.000 y $70.000") ~ '6-Entre $50 y $70 mil', 
+   solicitud_plan %in% c("Entre $70.000 y $80.000", "Entre $80.000 y $90.000") ~ '7-Entre $70 y $90 mil', 
+   solicitud_plan %in% c("Entre $90.000 y $100.000", "Más de $100.000") ~ '8-Más de $90 mil'))%>%
+  group_by(solicitud_plan)%>%
+  summarise(cantidad=n())%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits = 2))
+
+plot_u_2_dispuesto<-hchart(df_urbano_2_dispuesto,
+                          type = "column", 
+                          hcaes(solicitud_plan, porcentaje, color = c("#4caf50")))%>%
+  hc_plotOptions(column = list(pointWidth = 65,
+                          dataLabels = list(enabled = TRUE, 
+                                            format = "{point.porcentaje:.1f}%", 
+                                            color = c("#4caf50"))))%>%
+  hc_yAxis(labels = list(format = "{value}%"), 
+           title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_u_2_dispuesto
+```
+
+## 3.1- Solicitantes que se mudarían a otra ciudad dentro de su provincia
+
+```{r}
+
+df_urbano_3_ciudad<-base_full%>%
+  filter(solicitud_linea == "A1" & !solicitud_mudanza_ciudad %in% c("NULL", "TEST"))%>%
+  group_by(solicitud_provinca, solicitud_mudanza_ciudad)%>%
+  summarise(cantidad = n())%>%
+  mutate(color = case_when(
+    solicitud_mudanza_ciudad =="Sí" ~ "#03a9f4",
+    solicitud_mudanza_ciudad == "No" ~ "#b6eb7b" 
+  ))
+
+plot_u_3_ciudad<-hchart(df_urbano_3_ciudad,
+                      type = "column",
+                      stacking = "percent",
+                      hcaes(solicitud_provinca, cantidad, group = solicitud_mudanza_ciudad, color = color))%>%
+  hc_colors(unique(df_urbano_3_ciudad$color))%>%
+  hc_yAxis(labels = list(format = "{value}%"), 
+           title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_u_3_ciudad
+```
+
+## 3.2- Solicitantes que se mudarían a otra provincia desde la que habitan
+
+```{r}
+
+df_urbano_3_provincia<-base_full%>%
+  filter(solicitud_linea == "A1")%>%
+  mutate(solicitud_mudanza_provincia = ifelse(solicitud_mudanza_provincias == "", "No", "Sí"))%>%
+  group_by(solicitud_provinca, solicitud_mudanza_provincia)%>%
+  summarise(cantidad = n())%>%
+  mutate(color = case_when(
+    solicitud_mudanza_provincia == "Sí" ~ "#03a9f4",
+    solicitud_mudanza_provincia == "No" ~ "#b6eb7b" 
+  ))
+
+plot_u_3_provincia<-hchart(df_urbano_3_provincia,
+                      type = "column",
+                      stacking = "percent",
+                      hcaes(solicitud_provinca, cantidad, group = solicitud_mudanza_provincia, color = color))%>%
+  hc_colors(unique(df_urbano_3_provincia$color))%>%
+  hc_yAxis(labels = list(format = "{value}%"),
+           title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_u_3_provincia
+```
+
+## 4.1 Disposicón a mudarse
+
+```{r}
+region_patagonia <- c("Chubut", "Neuquén", "La Pampa", "Santa Cruz", "Río Negro", "Tierra del Fuego")
+region_noa <- c("Catamarca", "Jujuy", "Santiago del Estero", "Tucumán", "La Rioja", "Salta")
+region_nea <- c("Chaco", "Corrientes", "Formosa", "Misiones")
+region_cuyo <- c("Mendoza", "San Luis", "San Juan")
+region_centro <- c("Córdoba", "Santa Fe", "Entre Ríos")
+region_pba <- c("Buenos Aires")
+region_caba <- c("Ciudad Autónoma de Buenos Aires")
+
+provincias<-base_full%>%
+  filter(solicitud_linea == "A1")%>%
+  unnest_regex(input = solicitud_mudanza_provincias, output = provincias_destino, pattern = "\\|", to_lower = F)%>%
+  filter(!provincias_destino == "NULL")%>%
+  mutate(
+    region_origen = case_when(
+      solicitud_provinca %in% region_patagonia ~ "Patagonia",
+      solicitud_provinca %in% region_noa ~"NOA",
+      solicitud_provinca %in% region_nea ~"NEA",
+      solicitud_provinca %in% region_cuyo ~"CUYO",
+      solicitud_provinca %in% region_centro ~"Centro",
+      solicitud_provinca %in% region_pba ~"PBA",
+      solicitud_provinca %in% region_caba ~"CABA"),
+    region_destino = case_when(
+      provincias_destino %in% region_patagonia ~"Patagonia",
+      provincias_destino %in% region_noa ~"NOA",
+      provincias_destino %in% region_nea ~"NEA",
+      provincias_destino %in% region_cuyo ~"CUYO",
+      provincias_destino %in% region_centro ~"Centro",
+      provincias_destino %in% region_pba ~"PBA",
+      provincias_destino %in% region_caba ~"CABA")
+  )%>%
+  mutate(region_destino = str_c(region_destino, " "),
+         provincias_destino = str_c(provincias_destino, " "))%>%
+  select(solicitud_id, solicitud_provinca, region_origen, provincias_destino, region_destino)
+
+df_urbano_4_provincia<-provincias%>%
+  group_by(from = region_origen, to =region_destino)%>%
+  summarise(weight = n())
+
+nodes <- unique(c(df_urbano_4_provincia$from, df_urbano_4_provincia$to)) |>
+  lapply(\(x) {
+    list(
+      id = x,
+      color = if (grepl("CABA", x)) "#5e35b1" else 
+              if (grepl("CUYO", x)) "pink" else
+              if (grepl("Centro", x)) "#ec407a" else
+              if (grepl("NEA", x)) "lightgreen" else 
+              if (grepl("NOA", x)) "#03a9f4" else 
+              if (grepl("PBA", x)) "purple" else 
+              if (grepl("Patagonia", x)) "orange" else 
+
+
+      name = gsub("\\d+\\.\\s?", "", x)
+    )
+  })
+
+plot_u_4_mudanza<-hchart(df_urbano_4_provincia,
+                         type = "sankey", 
+                         name = "provincias_destino",
+                         nodes = nodes)%>%
+  hc_exporting(enabled=TRUE)%>%
+  hc_plotOptions(sankey = list(
+    curveFactor = 0.6,
+    linkOpacity = 0.2))
+plot_u_4_mudanza
+```
+
+## 4.2 Motivos mudanza
+
+```{r}
+df_urbano_4_intereses<-base_full%>%
+  filter(solicitud_linea == "A1")%>%
+  unnest_regex(input = solicitud_intereses, output = intereses, pattern = "\\|", to_lower = F)%>%
+  filter(!intereses == "NULL")%>%
+  select(solicitud_id, intereses)%>%
+  group_by(intereses)%>%
+  summarise(cantidad= n())%>%
+  mutate(intereses = str_to_sentence(str_replace_all(intereses, "Porque ", "")))%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits = 2),
+         color = case_when(
+           intereses == "Otros" ~ "#00b6cb", 
+           intereses == "El barrio no cuenta con servicios básicos" ~ "#ec407a",
+           intereses == "El barrio se encuentra lejos de instituciones de la ciudad" ~"#ff7043",
+           intereses == "El barrio se volvió inseguro" ~ "#7cb342",
+           intereses == "Hay situaciones de violencia y/o intrafamiliar" ~ "#03a9f4",
+           intereses == "La casa no es nuestra" ~ "#0072f0",
+           intereses == "La casa no tiene título a nuestro nombre" ~ "#ffa800",
+           intereses == "La vivienda está lejos de miembros familiares" ~ "#f15a60",
+           intereses == "La vivienda está lejos de sitios de trabajo" ~ "#5e35b1",
+           intereses == "No alcanza para el alquiler" ~ "#00b6cb",
+           intereses == "Somos muchos y no entramos en donde vivimos" ~ "#f10096",
+           intereses == "Tengo conflictos con los vecinos" ~ "#7ac36a",
+           intereses == "Vivo en la casa de mi padre/madre" ~ "#f66d00"
+         ))%>%
+  arrange(desc(cantidad))
+  
+plot_u_4_intereses<-hchart(df_urbano_4_intereses, 
+                        type = "pie", 
+                        innerSize = 250, colorByPoint = TRUE,
+                        hcaes(intereses, cantidad, color = color),
+                         dataLabels = list(
+                          format = "{point.percentage:.1f}%",
+                          # enabled = FALSE,
+                          distance = '-30%',
+                        showInLegend=TRUE
+                       ))%>%
+  hc_plotOptions(pie = list(showInLegend = TRUE,
+                            dataLabels = list(
+                              enabled = TRUE,
+                              filter = list(
+                                property= 'percentage',
+                                operator='>',
+                                value= 2.5))))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_u_4_intereses 
+```
+
+## 5- Provincias elegidas de destino
+
+```{r}
+df_urbano_5_provincias<-provincias%>%
+  mutate(solicitud_provinca = ifelse(solicitud_provinca=="Ciudad Autónoma de Buenos Aires", "CABA", solicitud_provinca),
+         provincias_destino = ifelse(provincias_destino=="Ciudad Autónoma de Buenos Aires ", "CABA", provincias_destino))%>%
+  group_by(solicitud_provinca, provincias_destino)%>%
+  summarise(cantidad = n())%>%
+  # ungroup()%>%
+  mutate(porcentaje = cantidad/ sum(cantidad)*100)
+
+plot_u_5_provincias<-hchart(df_urbano_5_provincias,
+                            type = "heatmap",
+                            hcaes(x = solicitud_provinca, 
+                                  y =  provincias_destino, 
+                                  value = porcentaje))%>%
+  hc_size(height = 900,
+          width = 900)%>%
+  hc_colorAxis(minColor = "lightyellow", maxColor = "#5e35b1")%>%
+  hc_plotOptions(heatmap = list(
+    dataLabels=list(
+      enabled=TRUE,
+      format = "{point.value:.1f}%",
+      filter = list(property= 'value',
+                    operator='>',
+                    value= 5))
+  ))
+plot_u_5_provincias
+
+```
+
+# RURAL
+
+## 1.1- Género
+
+```{r}
+df_rural_1_genero<-base_full%>%
+  filter(solicitud_linea == "R1")%>%
+  filter(titular_genero %in% c( "Mujer", "Varón", "Mujer trans, varón trans, travesti, no binario"))%>%
+  group_by(titular_genero)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje = cantidad/sum(cantidad),
+         color = case_when(
+           titular_genero == "Mujer" ~ "#fb76c1",
+           titular_genero == "Varón" ~ "#0a85ed",
+           titular_genero == "Mujer trans, varón trans, travesti, no binario" ~ "#797ed9"))%>%
+  arrange(desc(cantidad))
+
+plot_r_1_genero<-hchart(df_rural_1_genero, 
+                        type = "pie", 
+                        innerSize = 250, colorByPoint = TRUE,
+                        hcaes(titular_genero, cantidad, color = color),
+                         dataLabels = list(
+                          format = "{point.percentage:.1f}%",
+                          # enabled = FALSE,
+                          distance = '-30%',
+                        showInLegend=TRUE
+                       ))%>%
+  hc_plotOptions(pie = list(showInLegend = TRUE))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_r_1_genero 
+```
+
+z #c# 1.2- Cantidad de miembros por familia
+
+```{r}
+df_rural_1_miembros <- base_full%>%
+  filter(solicitud_linea == "R1" & !solicitud_tierra_personas %in% c("NULL", "TEST", "", "null"))%>%
+  mutate(
+    solicitud_tierra_personas = ifelse(solicitud_tierra_personas == "Vivo solo/a", "1", solicitud_tierra_personas),
+    solicitud_tierra_personas = ifelse(solicitud_tierra_personas == "Más de 10", "10", solicitud_tierra_personas),
+    solicitud_tierra_personas = as.numeric(solicitud_tierra_personas)
+    )%>%
+  group_by(solicitud_tierra_personas)%>%
+  summarise(cantidad=n())%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits = 2))
+
+plot_r_1_miembros<-hchart(df_rural_1_miembros,
+                          type = "column", 
+                          hcaes(solicitud_tierra_personas, porcentaje, color = c("#00b6cb")))%>%
+  hc_plotOptions(column = list(pointWidth = 65,
+                          dataLabels = list(enabled = TRUE, 
+                                            format = "{point.porcentaje:.1f}%", 
+                                            color = c("#00b6cb"))))%>%
+  hc_yAxis(labels = list(format = "{value}%"),
+           title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_r_1_miembros
+
+```
+
+## 1.3- Actividades productivas
+
+```{r}
+df_rural_1_actividades<-base_full%>%
+  filter(solicitud_linea == "R1")%>%
+  mutate(es_productor = ifelse(solicitud_produccion_desde == "No soy productor/a", "No", "Sí"))%>%
+  group_by(es_productor)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje = cantidad/sum(cantidad), 
+         color = case_when(
+           es_productor == "Sí" ~ "#03a9f4",
+           es_productor == "No" ~ "#b6eb7b"
+         ))
+
+plot_r_1_productor<-plot_4_genero <- hchart(df_rural_1_actividades, 
+                        type = "pie",
+                        colorByPoint = TRUE,
+                        hcaes(es_productor, cantidad, color = color),
+                        dataLabels = list(
+                          format = "<b>{point.name}</b><br>{point.percentage:.1f}%"
+                        ))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_r_1_productor
+```
+
+## 2.1- Cantidad de miembros por familia
+
+## 2.2- Trabajadores permanentes por fuera del grupo familiar
+
+```{r}
+
+df_rural_2_trabajadores<-base_full%>%
+  group_by(solicitud_produccion_trabajadores)%>%
+  summarise(cantidad = n())%>%
+  filter(!is.na(solicitud_produccion_trabajadores))%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits = 2))
+
+plot_r_2_trabajadores<-hchart(df_rural_2_trabajadores,
+                          type = "column", 
+                          hcaes(solicitud_produccion_trabajadores, porcentaje, color = c("#4caf50")))%>%
+  hc_plotOptions(column = list(pointWidth = 65,
+                          dataLabels = list(enabled = TRUE, 
+                                            format = "{point.porcentaje:.1f}%", 
+                                            color = c("#4caf50"))))%>%
+  hc_yAxis(labels = list(format = "{value}%"),
+           title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled = TRUE)
+plot_r_2_trabajadores
+```
+
+## 2.3- Rango etario
+
+```{r}
+df_rural_2_etario<-base_full%>%
+  filter(solicitud_linea == "R1")%>%
+  mutate(titular_fecha_nacimiento_renaper=ymd(titular_fecha_nacimiento_renaper), 
+         edad = year(Sys.Date())-year(titular_fecha_nacimiento_renaper),
+         rango_etario = cut(edad, 
+                            breaks = c(0,29,59,500),
+                            labels = c("18-29", "30-59", "+60"), 
+                            include.lowest = T))%>%
+  # select(solicitud_id, titular_fecha_nacimiento_renaper, edad, rango_etario)%>%
+  group_by(solicitud_linea, rango_etario)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  group_by(solicitud_linea)%>%
+  filter(!is.na(rango_etario))%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad), digits = 3))
+
+df_rural_2_etario
+```
+
+## 2.4- Genero productor
+
+```{r}
+df_rural_2_genero<-base_full%>%
+  filter(solicitud_linea == "R1"& !solicitud_produccion_desde == "No soy productor/a")%>%
+  filter(titular_genero %in% c( "Mujer", "Varón", "Mujer trans, varón trans, travesti, no binario"))%>%
+  group_by(titular_genero)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits=2),
+         color = case_when(
+           titular_genero == "Mujer" ~ "#fb76c1",
+           titular_genero == "Varón" ~ "#0a85ed",
+           titular_genero == "Mujer trans, varón trans, travesti, no binario" ~ "#797ed9"))
+
+
+plot_r_2_genero<-hchart(df_rural_2_genero, 
+                        type = "pie", 
+                        innerSize = 250, colorByPoint = TRUE,
+                        hcaes(titular_genero, cantidad, color = color),
+                         dataLabels = list(
+                          format = "{point.percentage:.1f}%",
+                          # enabled = FALSE,
+                          distance = '-30%',
+                        showInLegend=TRUE
+                       ))%>%
+  hc_plotOptions(pie = list(showInLegend = TRUE))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_r_2_genero  
+```
+
+## 2.5- Rango etario por género
+
+```{r}
+df_rural_2_rango_genero <- base_full%>%
+  filter(solicitud_linea == "R1" & !solicitud_produccion_desde == "No soy productor/a")%>%
+  mutate(titular_fecha_nacimiento_renaper=ymd(titular_fecha_nacimiento_renaper), 
+         edad = year(Sys.Date())-year(titular_fecha_nacimiento_renaper),
+         rango_etario = cut(edad, 
+                            breaks = c(0,29,39,49,59,69,500),
+                            labels = c("18-29", "30-39", "40-49", "50-59", "60-69", "70+"), 
+                            include.lowest = T))%>%
+  group_by(titular_genero, rango_etario)%>%
+  summarise(cantidad=n())%>%
+  ungroup()%>%
+  # group_by(rango_etario)%>%
+  mutate(porcentaje=round(cantidad/sum(cantidad)*100, digits=2), 
+         color = case_when(
+           titular_genero == "Mujer" ~ "#fb76c1",
+           titular_genero == "Varón" ~ "#0a85ed",
+           titular_genero == "Mujer trans, varón trans, travesti, no binario" ~ "#797ed9"))
+
+plot_r_2_rango<-hchart(df_rural_2_rango_genero, 
+                       type = "column",
+                       inverted = TRUE,
+                       stacking = list(enabled = TRUE),
+                       hcaes(rango_etario, porcentaje, group = titular_genero, color = color))%>%
+  hc_colors(color = unique(df_rural_2_rango_genero$color))%>%
+  hc_chart(inverted = TRUE)%>%
+  hc_yAxis(title = FALSE)%>%
+  hc_xAxis(title = FALSE)%>%
+  hc_exporting(enabled=TRUE)
+plot_r_2_rango
+```
+
+## 3.1- Finalidad producción
+
+```{r}
+df_rural_3_finalidad<-base_full%>%
+  filter(!solicitud_produccion_finalidad %in% c("TEST", "NULL", ""))%>%
+  group_by(solicitud_produccion_finalidad)%>%
+  summarise(cantidad = n())%>%
+  filter(solicitud_produccion_finalidad %in% c("Autoconsumo", "Venta"))%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits = 2), 
+         color = case_when(
+           solicitud_produccion_finalidad == "Autoconsumo" ~ "#00b6cb",
+           solicitud_produccion_finalidad == "Venta" ~ "#0072f0"
+         ))
+
+plot_r_3_finalidad<-hchart(df_rural_3_finalidad, 
+                        type = "pie",
+                        colorByPoint = TRUE,
+                        hcaes(solicitud_produccion_finalidad, cantidad, color = color),
+                        dataLabels = list(
+                          format = "<b>{point.name}</b><br>{point.percentage:.1f}%"
+                        ))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_r_3_finalidad  
+```
+
+## 3.2- Finalidad producción 2
+
+```{r}
+df_rural_3_produccion<-base_full%>%
+  filter(!solicitud_produccion_tipo %in% c("TEST", "NULL", "", "null"))%>%
+  group_by(solicitud_produccion_tipo)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits = 2),
+         color = case_when(
+           solicitud_produccion_tipo == "Hortalizas" ~ "#0072f0",
+           solicitud_produccion_tipo == "Vivero" ~ "#7cb342",
+           solicitud_produccion_tipo == "Granja mixta" ~ "#f10096",
+           solicitud_produccion_tipo == "Cultivo especializado (ej: Papa o Cebolla)" ~ "#5e35b1",
+           solicitud_produccion_tipo == "Otro" ~ "#f66d00",
+           solicitud_produccion_tipo == "Cereales para grano" ~ "#f66d00",
+           solicitud_produccion_tipo == "Fruta" ~ "#ffa800",
+           solicitud_produccion_tipo == "Cultivo industrial (ej: yerba, tabaco, etc)" ~ "#00b6cb",
+           solicitud_produccion_tipo == "Legumbre u oleaginosa" ~ "#03a9f4"
+         ))%>%
+  arrange(desc(cantidad))
+
+plot_r_3_finalidad_2<-hchart(df_rural_3_produccion, 
+                        type = "pie", 
+                        innerSize = 250, colorByPoint = TRUE,
+                        hcaes(solicitud_produccion_tipo, cantidad, color = color),
+                         dataLabels = list(
+                          format = "{point.percentage:.1f}%",
+                          # enabled = FALSE,
+                          distance = '-30%',
+                        showInLegend=TRUE
+                       ))%>%
+  hc_plotOptions(pie = list(showInLegend = TRUE,
+                            dataLabels = list(
+                              enabled = TRUE,
+                              filter = list(
+                                property= 'percentage',
+                                operator='>',
+                                value= 3))))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_r_3_finalidad_2  
+```
+
+## 3.3- Forma acceso a la tierra
+
+```{r}
+df_rural_3_acceso<-base_full%>%
+  filter(!solicitud_tierra_acceso %in% c("TEST", "NULL", "", "null"))%>%
+  group_by(solicitud_tierra_acceso)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits = 2),
+         color = case_when(
+           solicitud_tierra_acceso == "Prestada" ~ "#f10096",
+           solicitud_tierra_acceso == "Arrienda directamente al dueño de la tierra" ~ "#0072f0",
+           solicitud_tierra_acceso == "Subarrienda (le paga a otra persona que le alquila al dueño)" ~ "#7cb342",
+           solicitud_tierra_acceso == "Posesión pacífica" ~ "#00b6cb",
+           solicitud_tierra_acceso == "Comprando en cuotas" ~ "#ffa800",
+           solicitud_tierra_acceso == "Comodato" ~ "#f66d00",
+           solicitud_tierra_acceso == "Dueño con escritura" ~ "#5e35b1"
+         ))%>%
+  arrange(desc(cantidad))
+
+
+plot_r_3_acceso<-hchart(df_rural_3_acceso, 
+                        type = "pie", 
+                        innerSize = 250, colorByPoint = TRUE,
+                        hcaes(solicitud_tierra_acceso, cantidad, color = color),
+                         dataLabels = list(
+                          format = "{point.percentage:.1f}%",
+                          # enabled = FALSE,
+                          distance = '-30%',
+                        showInLegend=TRUE
+                       ))%>%
+  hc_plotOptions(pie = list(showInLegend = TRUE,
+                            dataLabels = list(
+                              enabled = TRUE,
+                              filter = list(
+                                property= 'percentage',
+                                operator='>',
+                                value= 3))))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_r_3_acceso  
+
+```
+
+## 3.4- Hectáreas
+
+```{r}
+library(RColorBrewer)
+
+df_rural_3_hectareas<-base_full%>%
+  filter(!solicitud_produccion_superficie %in% c("TEST", "NULL", "", "null"))%>%
+  group_by(solicitud_produccion_superficie)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad / sum(cantidad)*100, digits = 2))%>%
+  arrange(desc(cantidad))
+
+# colores<-RColorBrewer::brewer.pal(n = 12, name = "YlOrRd")
+
+colores<-c(heat.colors(nrow(df_rural_3_hectareas)))
+  
+df_rural_3_hectareas<-df_rural_3_hectareas%>%
+  cbind(colores)
+
+plot_r_3_hectareas<-hchart(df_rural_3_hectareas,
+                           type = "treemap", 
+                           hcaes(x= solicitud_produccion_superficie, value = cantidad),
+                           colorByPoint = TRUE, 
+                           dataLabels = list(
+                             format = "{point.name} Ha<br>{point.porcentaje}%"
+                           ))%>%
+  hc_colors(colores)
+plot_r_3_hectareas
+```
+
+## 4- Productorxs con disposición a mudarse
+
+```{r}
+insertar_br <- function(texto) {
+  fragmentos <- strsplit(texto, "(\\s{3})", perl = TRUE)[[1]]
+  texto_con_br <- paste(fragmentos, collapse = "<br>")
+  return(texto_con_br)
+}
+
+df_rural_4_mudanza<-base_full%>%
+  filter(!solicitud_mudanza_lugar %in% c("TEST", "NULL", "", "null"))%>%
+  group_by(solicitud_mudanza_lugar)%>%
+  summarise(cantidad = n())%>%
+  ungroup()%>%
+  mutate(porcentaje = round(cantidad/sum(cantidad)*100, digits = 2),
+         color = case_when(
+           solicitud_mudanza_lugar == "Dentro de la misma localidad en la que produzco actualmente" ~ "#0072f0",
+           solicitud_mudanza_lugar == "A otra localidad o partido de la provincia en la que produzco actualmente" ~ "#f66d00",
+           solicitud_mudanza_lugar == "A otra provincia del país" ~ "#00b6cb"
+         ))%>%
+  arrange(desc(cantidad))%>%
+  rowwise()%>%
+  # mutate(solicitud_mudanza_lugar = gsub("(\\s{3})", "<br>", solicitud_mudanza_lugar))
+  mutate(solicitud_mudanza_lugar = insertar_br(solicitud_mudanza_lugar))
+
+plot_r_4_mudanza<-hchart(df_rural_4_mudanza, 
+                        type = "pie", 
+                        innerSize = 250, colorByPoint = TRUE,
+                        hcaes(solicitud_mudanza_lugar, cantidad, color = color),
+                         dataLabels = list(
+                          format = "{point.percentage:.1f}%",
+                          # enabled = FALSE,
+                          distance = '-30%',
+                        showInLegend=TRUE
+                       ))%>%
+  hc_colors(colors = unique(df_rural_4_mudanza$color))%>%
+  hc_plotOptions(pie = list(showInLegend = TRUE))%>%
+  hc_legend(align = "right",
+            verticalAlign = "top",
+            layout = "vertical",
+            width=200,
+            labelFormatter = JS(hcLabelRender))%>%
+  hc_exporting(enabled = TRUE)
+plot_r_4_mudanza  
+```
+
+## 5- Provincia
+
+```{r}
+df_rural_5_provincias<-base_full%>%
+  filter(solicitud_linea == "R1" & !solicitud_provinca == "TEST")%>%
+  tabyl(var1 = solicitud_provinca)%>%
+  adorn_rounding(digits = 2)
+```
+
+## 6- antiguedad
+
+```{r}
+df_rural_6_antiguedad<-base_full%>%
+  filter(!solicitud_produccion_desde %in% c("False", "NULL", "No soy productor/a", "TEST"))%>%
+  group_by(solicitud_produccion_desde)%>%
+  summarise(cantidad=n())
+```
